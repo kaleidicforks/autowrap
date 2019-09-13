@@ -249,7 +249,10 @@ private mixin template RecursiveAggregateImpl(T, alias Other) {
         alias RecursiveAggregateImpl = Date;
     } else static if(isUserAggregate!T) {
         alias AggMember(string memberName) = Symbol!(T, memberName);
-        alias members = staticMap!(AggMember, __traits(allMembers, T));
+        static if (__traits(compiles,staticMap!(AggMember, __traits(allMembers,T))))
+            alias members = staticMap!(AggMember, __traits(allMembers, T));
+        else
+            alias members = AliasSeq!();
         enum isNotMe(U) = !is(Unqual!T == Unqual!U);
 
         alias types = staticMap!(Type, members);

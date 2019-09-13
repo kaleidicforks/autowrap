@@ -264,7 +264,7 @@ private string generateFields(T)(ref string[] imports) {
             alias FT = FieldTypes[fc];
             static if(verifySupported!FT && __traits(getProtection, __traits(getMember,T,fieldNames[fc])).among("export", "public"))
             {
-                alias fn = fieldNames[fc];
+                enum fn = fieldNames[fc];
                 static if (is(typeof(__traits(getMember, T, fn))))
                 {
                     addImport!FT(imports);

@@ -301,8 +301,7 @@ private void generateMethods(T)(string libraryName)
                         alias ParamTypes = Parameters!mo;
                         alias Types = AliasSeq!(RT, ParamTypes);
 
-                        static if(Filter!(verifySupported, Types).length != Types.length)
-                            continue;
+                        static if(Filter!(verifySupported, Types).length != Types.length) {}
                         else
                         {
                             enum numParams = ParamTypes.length - nda;
@@ -511,7 +510,7 @@ private void generateFields(T)(string libraryName) if (is(T == class) || is(T ==
             alias FT = FieldTypes[fc];
             static if(verifySupported!FT)
             {
-                alias fn = fieldNames[fc];
+                enum fn = fieldNames[fc];
                 static if (is(typeof(__traits(getMember, T, fn))))
                 {
                     csagg.properties ~= dllImportString.format(libraryName, getDLangInterfaceName(fqn, fn ~ "_get"));
@@ -559,7 +558,7 @@ private void generateFields(T)(string libraryName) if (is(T == class) || is(T ==
             alias FT = FieldTypes[fc];
             static if(verifySupported!FT)
             {
-                alias fn = fieldNames[fc];
+                enum fn = fieldNames[fc];
                 static if (is(typeof(__traits(getMember, T, fn))))
                 {
                     auto nameTuple = getCSFieldNameTuple(aggName, fn);
