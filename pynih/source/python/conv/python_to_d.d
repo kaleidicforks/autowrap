@@ -49,15 +49,21 @@ auto to(T)(PyObject* value) @trusted if(isUserAggregate!T && is(T == struct)) {
 private void toStructImpl(T)(PyObject* value, T* ret) {
     import python.type: PythonClass;
 
-    auto pyclass = cast(PythonClass!T*) value;
+    static if(!__traits(compiles,cast(PythonClass!T*) value))
+        return; 
+    else
+    {
+        auto pyclass = cast(PythonClass!T*) value;
 
-    static foreach(i; 0 .. typeof(*ret).tupleof.length) {
-        (*ret).tupleof[i] = pyclass.getField!i.to!(typeof(T.tupleof[i]));
+        static foreach(i; 0 .. typeof(*ret).tupleof.length) {
+            static if(__traits(compiles, pyclass.getField!i.to!(typeof(T.tupleof[i]))))
+                (*ret).tupleof[i] = pyclass.getField!i.to!(typeof(T.tupleof[i]));
+        }
     }
 }
 
 
-T to(T)(PyObject* value) @trusted if(isUserAggregate!T && !is(T == struct)) {
+T to(T)(PyObject* value) @trusted if(isUserAggregate!T && !is(T == struct) && !is(T ==union)) {
     import python.type: PythonClass, userAggregateInit, gFactory;
     import std.traits: Unqual;
     import std.string: fromStringz;
@@ -102,7 +108,7 @@ T to(T)(PyObject* value) if(is(Unqual!T == Date)) {
 }
 
 
-T to(T)(PyObject* value) if(isArray!T && !isSomeString!T)
+T to(T)(PyObject* value) if(isArray!T && !isSomeString!T && !is(T==void[1]))
     in(pyListCheck(value) || pyTupleCheck(value))
 {
     import python.raw: PyList_Size, PyList_GetItem, PyTuple_Size, PyTuple_GetItem;

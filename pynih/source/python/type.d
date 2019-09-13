@@ -17,7 +17,7 @@ import std.meta: allSatisfy;
 package enum isPhobos(T) = isDateOrDateTime!T || isTuple!T;
 package enum isDateOrDateTime(T) = is(Unqual!T == DateTime) || is(Unqual!T == Date);
 package enum isTuple(T) = is(T: Tuple!A, A...);
-package enum isUserAggregate(T) = isAggregateType!T && !isPhobos!(T);
+package enum isUserAggregate(T) = isAggregateType!T && !isPhobos!(T) && !is(T==union);
 package enum isNonRangeUDT(T) = isUserAggregate!T && !isInputRange!T;
 
 
@@ -77,11 +77,12 @@ struct PythonType(T) {
             _pyType.tp_flags |= TypeFlags.BaseType;
 
         // FIXME: types are that user aggregates *and* callables
-        static if(isUserAggregate!T) {
+        static if (isUserAggregate!T) {
             _pyType.tp_basicsize = PythonClass!T.sizeof;
             _pyType.tp_getset = getsetDefs;
             _pyType.tp_methods = methodDefs;
-            _pyType.tp_new = &_py_new;
+            static if(__traits(compiles, &_py_new))
+                _pyType.tp_new = &_py_new;
             _pyType.tp_repr = &_py_repr;
             _pyType.tp_init = &_py_init;
 
@@ -90,6 +91,7 @@ struct PythonType(T) {
             static if(
                 hasMember!(T, "opCmp")
                 && !__traits(isSame, TemplateOf!T, std.typecons.Typedef)
+                && __traits(compiles, &T.copCmp !is &Object.opCmp)
                 && &T.opCmp !is &Object.opCmp
                 )
             {
@@ -153,7 +155,10 @@ struct PythonType(T) {
             }}
 
             static foreach(assignOp; assignOperators) {{
-                enum slot = dlangAssignOpToPythonSlot(assignOp);
+            enum slot = dlangAssignOpToPythonSlot(assignOp);
+            pragma(msg,slot);
+            static if (slot != "tp_as_number.nb_inplace_divide")
+                {
                                 // some of them differ in arity
                 enum slotArity = arity!(mixin(`typeof(PyTypeObject.`, slot, `)`));
 
@@ -167,6 +172,7 @@ struct PythonType(T) {
 
                 // set the C function that implements this operator
                 mixin(`_pyType.`, slot, ` = &PythonAssignOperator!(T, assignOp).`, cFuncName, `;`);
+                }
             }}
 
             static if(isCallable!T) {
@@ -186,7 +192,8 @@ struct PythonType(T) {
             _pyType.tp_basicsize = PythonCallable!T.sizeof;
             _pyType.tp_call = &PythonCallable!T._py_call;
         } else
-            static assert(false, "Don't know what to do for type " ~ T.stringof);
+            //static assert(false, "Don't know what to do for type " ~ T.stringof);
+            pragma(msg, "Don't know what to do for type " ~ T.stringof);
 
         static if(hasLength) {
             if(_pyType.tp_as_sequence is null)
@@ -200,21 +207,29 @@ struct PythonType(T) {
         }
     }
 
-    static if(isUserAggregate!T)
+    static if (isUserAggregate!T)
     private static auto getsetDefs() {
         import autowrap.reflection: Properties;
         import python.raw: PyGetSetDef;
-        import std.meta: staticMap, Filter, Alias;
+        import std.meta: staticMap, Filter; // Alias
         import std.traits: isFunction, ReturnType;
-
+        alias Alias(T) = T;
+        //alias Alias(alias a) = a;
         static if(is(T == struct)) {
-            enum isPublic(string memberName) =
-                __traits(getProtection, __traits(getMember, T, memberName)) == "public";
+            template isPublic(string memberName)
+            {
+                static if (__traits(compiles,
+                    __traits(getProtection, __traits(getMember, T, memberName)) == "public"))
+                 enum isPublic = __traits(getProtection, __traits(getMember, T, memberName)) == "public";
+                else
+                    enum isPublic=true;
+            }
             alias publicMemberNames = Filter!(isPublic, __traits(allMembers, T));
-            alias AggMember(string memberName) = Alias!(__traits(getMember, T, memberName));
+            //alias AggMember(string memberName) = Alias!(__traits(getMember, T, memberName));
+            alias AggMember(string memberName) = __traits(getMember, T, memberName);
             alias members = staticMap!(AggMember, publicMemberNames);
             alias publicMemberFunctions = Filter!(isFunction, members);
-        } else {
+        } else static if(is(T==class)) {
             import std.traits: MemberFunctionsTuple;
             enum isFunctionName(string name) = isFunction!(__traits(getMember, T, name));
             alias functionNames = Filter!(isFunctionName, __traits(allMembers, T));
@@ -335,7 +350,7 @@ struct PythonType(T) {
         return 0;
     }
 
-    static if(isUserAggregate!T)
+    static if(isUserAggregate!T && __traits(compiles,toPython(userAggregateInit!T)))
     private static extern(C) PyObject* _py_new(PyTypeObject *type, PyObject* args, PyObject* kwargs) nothrow {
         return noThrowable!({
             import python.conv: toPython;
@@ -344,22 +359,38 @@ struct PythonType(T) {
 
             if(PyTuple_Size(args) == 0) return toPython(userAggregateInit!T);
 
-            static if(hasMember!(T, "__ctor"))
-                return callDlangFunction!(T, __traits(getMember, T, "__ctor"))(null /*self*/, args, kwargs);
-            else { // allow implicit constructors to work in Python
+            static if (hasMember!(T, "__ctor"))
+            {
+                enum P = __traits(getProtection,__traits(getMember,T,"__ctor"));
+                static if (P == "public" || P=="export")
+                    return callDlangFunction!(T, __traits(getMember, T, "__ctor"))(null /*self*/, args, kwargs);
+                else
+                    return null;
+            }
+            else
+            {
+                // allow implicit constructors to work in Python
                 T impl(fieldTypes fields = fieldTypes.init) {
-                    static if(is(T == class)) {
+                    static if( is(T == class)) {
                         if(PyTuple_Size(args) != 0)
                             throw new Exception(T.stringof ~ " has no constructor therefore can't construct one from arguments");
                         return T.init;
                     } else
-                        return T(fields);
+                    {
+                        static if (__traits(compiles,T(fields)))
+                            return T(fields);
+                        else
+                            return T.init;
+                    }
                 }
 
-                return callDlangFunction!(typeof(impl), impl)(null /*self*/, args, kwargs);
+                static if (__traits(compiles,callDlangFunction!(typeof(impl), impl)(null, args, kwargs)))
+                    return callDlangFunction!(typeof(impl), impl)(null /*self*/, args, kwargs);
+                else
+                    return null;
             }
-        });
-    }
+    });
+}
 }
 
 
@@ -462,7 +493,8 @@ private auto pythonArgsToDArgs(bool isVariadic, P...)(PyObject* args, PyObject* 
             PyErr_Clear;
             throw new ArgumentConversionException("Can't convert to " ~ T.stringof);
         }
-        dArgs[i] = item.to!T;
+        static if(__traits(compiles,item.to!T))
+            dArgs[i] = item.to!T;
     }
 
     int pythonArgIndex = 0;
@@ -522,9 +554,18 @@ private void mutateSelf(T)(PyObject* self, auto ref T dAggregate) {
     import python.conv.d_to_python: toPython;
     import python.raw: pyDecRef;
 
-    auto newSelf = {
-        return self is null ? self : toPython(dAggregate);
-    }();
+    static if (__traits(compiles,toPython(dAggregate)))
+    {
+        auto newSelf = {
+            return self is null ? self : toPython(dAggregate);
+        }();
+    }
+    else
+    {
+        auto newSelf = {
+            return self;
+        }();
+    }
     scope(exit) {
         if(self !is null) pyDecRef(newSelf);
     }
@@ -698,7 +739,10 @@ private PyObject* callDlangFunction(alias F, A)(auto ref A argTuple) {
         return pyNone;
     } else {
         auto dret = F(argTuple.expand);
-        return dret.toPython;
+        static if(__traits(compiles,dret.toPython))
+            return dret.toPython;
+        else
+            return null;
     }
 }
 
@@ -707,7 +751,8 @@ private PyObject* callDlangFunction(alias F, A)(auto ref A argTuple) {
    Creates an instance of a Python class that is equivalent to the D type `T`.
    Return PyObject*.
  */
-PyObject* pythonClass(T)(auto ref T dobj) {
+PyObject* pythonClass(T)(auto ref T dobj)
+if (is(T==struct) || is(T == class)) {
 
     import python.conv: toPython;
     import python.raw: pyObjectNew;
@@ -766,7 +811,7 @@ Object delegate(PyObject*)[string] gFactory;
    assign anything but an integer to `Foo.i` or a string to `Foo.s` in Python
    will raise `TypeError`.
  */
-struct PythonClass(T) if(isUserAggregate!T) {
+struct PythonClass(T) if(isUserAggregate!T && __traits(compiles,PythonType!(Unqual!T).fieldNames)) {
     import python.raw: PyObjectHead, PyGetSetDef;
     import std.traits: Unqual;
 
@@ -937,7 +982,10 @@ private template PythonUnaryOperator(T, string op) {
 
             static assert(Parameters!(T.opUnary!op).length == 0, "opUnary can't take any parameters");
 
-            return self.to!T.opUnary!op.toPython;
+            static if(__traits(compiles,self.to!T.opUnary!op.toPython))
+                return self.to!T.opUnary!op.toPython;
+            else
+                return null;
         });
     }
 }
@@ -1013,7 +1061,12 @@ private template PythonBinaryOperator(T, BinaryOperator operator) {
 
                     auto this_ = self.to!T;
                     auto dArg  = pArg.to!Arg;
-                    mixin(`return this_.`, funcName, `!(operator.op)(dArg).toPython;`);
+                    static if(__traits(compiles,
+                        mixin(`return this_.`, funcName, `!(operator.op)(dArg).toPython;`)))
+                        mixin(`return this_.`, funcName, `!(operator.op)(dArg).toPython;`);
+                    else
+                        throw new Exception(text(T.stringof, " does not support ", funcName, " with self on ", dir));
+
                 } else {
                     throw new Exception(text(T.stringof, " does not support ", funcName, " with self on ", dir));
                 }
@@ -1048,7 +1101,10 @@ private template PythonAssignOperator(T, string op) {
 
             auto dObj = lhs.to!T;
             dObj.opOpAssign!op(rhs.to!(parameters[0]));
-            return dObj.toPython;
+            static if(__traits(compiles, dObj.toPython))
+                return dObj.toPython;
+            else
+                return null;
         }
 
         return noThrowable!impl;
@@ -1253,6 +1309,14 @@ private bool checkPythonType(T)(PyObject* value) if(isArray!T) {
     import python.raw: pySequenceCheck;
     const ret = pySequenceCheck(value);
     if(!ret) setPyErrTypeString!"sequence";
+    return ret;
+}
+
+// FIXME
+private bool checkPythonType(T)(PyObject* value) if(is(T==bool) || is(T==char)) {
+    import python.raw: pyIntCheck, pyLongCheck;
+    const ret = pyLongCheck(value) || pyIntCheck(value);
+    if(!ret) setPyErrTypeString!"long";
     return ret;
 }
 

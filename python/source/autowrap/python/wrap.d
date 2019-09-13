@@ -102,7 +102,7 @@ void wrapAllAggregates(Modules...)() if(allSatisfy!(isModule, Modules)) {
             wrapAggregate!aggregate;
         else {
             pragma(msg, "\nERROR! Autowrap could not wrap aggregate `", fullyQualifiedName!aggregate, "` for Python\n");
-            // wrapAggregate!aggregate; // uncomment to see the error messages from the compiler
+            wrapAggregate!aggregate; // uncomment to see the error messages from the compiler
         }
     }
 }

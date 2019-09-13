@@ -53,13 +53,13 @@ PyObject* toPython(T)(T value) if(isInputRange!T && !isSomeString!T && !isStatic
 }
 
 
-PyObject* toPython(T)(auto ref T value) if(isNonRangeUDT!T) {
+PyObject* toPython(T)(auto ref T value) if(isNonRangeUDT!T && __traits(compiles,pythonClass(value))) {
     import python.type: pythonClass;
     return pythonClass(value);
 }
 
 
-PyObject* toPython(T)(T value) if(isPointer!T && isUserAggregate!(PointerTarget!T)) {
+PyObject* toPython(T)(T value) if(isPointer!T && (is(PointerTarget!T==struct) || is(PointerTarget!T==class))) {
     import python.type: pythonClass;
     return pythonClass(value);
 }
